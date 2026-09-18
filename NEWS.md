@@ -1,3 +1,91 @@
+# OptSurvCutR v0.11.1 (2026-09-18)
+
+## Breaking Changes
+
+* **Stability Tier Labels Renamed:** Renamed `tier_label` values from `"DISTINCT"` to `"CONSISTENT"` and `"CAUTION"` to `"OVERLAPPING"` in `validate_cutpoint()` outputs to describe interval overlap directly. Numeric `tier` designations (`"Tier 1"`–`"Tier 4"`), cutoffs, and logic remain unchanged. Removed internal diagnostic tags (`"- OVERLAP DOWNGRADE"`, `"- SEPARATION OVERRIDE"`). **Downstream code matching literal strings `"DISTINCT"` or `"CAUTION"` must be updated.**
+
+| Tier | Criteria | Diagnostic Interpretation |
+| :--- | :--- | :--- |
+| **1 (OPTIMAL)** | Width < 30%, zero overlap | Highly consistent boundaries across samples |
+| **2 (CONSISTENT)** | Zero overlap, any width | Groups remain distinct; exact boundary may shift |
+| **3 (OVERLAPPING)** | Overlap present, any width | Boundary confidence intervals intersect |
+| **4 (UNSTABLE)** | Width > 60%, no clean separation | Severe instability; likely sample noise overfitting |
+
+## New Features
+
+* **Console Control (`quiet = TRUE`):** Added a `quiet` parameter (default `FALSE`) to `validate_cutpoint()` to suppress progress bars in scripted pipelines and automated test suites.
+* **Test Performance Optimization:** Configured `options(cli.progress_show_after = Inf)` across package tests and vignettes to bypass CLI rendering overhead, reducing local test-suite runtime by ~65% (~418s vs. ~1215s) with zero skipped test logic.
+
+## Bug Fixes
+
+* **Unadjusted `p_value` Search:** Fixed null log-likelihood extraction in `.get_stat()` from `coxph(~ 1)` when `covariates = NULL`, resolving an issue where `find_cutpoint_number(method = "systematic")` failed screening and defaulted to 0 cuts.
+* **Permutation Tail Direction:** Corrected `.run_permutations()` for `criterion = "p_value"` to evaluate test statistics against the empirical lower tail (`<=`) rather than the upper tail.
+* **Schoenfeld Residual Faceting:** Updated `plot_cutpoint_residuals()` to extract column-separated residuals via `residuals(fit, type = "schoenfeld")`, rendering separate diagnostic panels for each non-reference risk tier.
+* **Survival Plot Label:** Updated default Kaplan-Meier y-axis label in `.plot_km_curve()` to endpoint-neutral `"Survival Probability"`.
+
+## Code Consolidation & Architecture
+
+* **S3 Method De-duplication:** Removed stale, redundant definitions of `print()`, `summary()`, and `plot()` from `find_cutpoint_number.R`, centralizing canonical implementations in `find_cutpoint_number_methods.R`.
+* **Helper Consolidation:** Removed duplicate `.calc_ic()` from `engine-genetic.R`, standardizing on `utils-helpers.R` as the single source.
+
+## Documentation & Maintenance
+
+* **Example Optimization:** Replaced the `find_cutpoint_number()` example with a fast (<1s) synthetic two-cluster simulation to eliminate execution-time NOTEs.
+* **Console Wording:** Updated the `validate_cutpoint()` stability header to `"Widest relative width (P10-P90): X%"` for consistency with percentile interval terminology.
+* **Link & Build Hygiene:** Converted README links to absolute URLs, updated redirected URLs in `NEWS.md`, normalized `CONTRIBUTING.md`, and removed redundant `data("colon")` lookups in vignettes.
+
+## Testing & Quality Assurance
+
+* **Regression Tests:** Added tests verifying unadjusted systematic p-value searches, empirical p-value tail directions, and `hazard_ratio` metric extraction.
+* **Tier Label Assertions:** Added tests confirming `tier_label` returns `"OVERLAPPING"` or `"CONSISTENT"` and never legacy terms.
+* **CRAN Test Throttling:** Guarded high-replicate bootstrap routines and heavy systematic tests in `test-workflow-integration.R` and `test-stability-metric.R` with `skip_on_cran()`.
+
+# OptSurvCutR v0.11.0 (2026-09-08)
+
+## Bug Fixes
+
+* **Stability Metric Denominator:** Corrected `summary.validate_cutpoint_result()` to calculate relative confidence interval width against the predictor's empirical 10th–90th percentile range ($P_{90} - P_{10}$) by preserving `userdata` in `validate_cutpoint()`. This resolves an issue where reported widths were artificially inflated and Stability Tier 1 was unreachable.
+* **Silent Fallback Removal:** Removed arbitrary fallback denominators (`bootstrap_distribution[, 1]` and medians). Undefined data spreads or degenerate discrete predictors now return explicit diagnostic warnings rather than substituted metrics.
+* **Single Cut-point Classification:** Single-threshold models are now classified strictly on relative width (< 30% Tier 1, 30%–60% Tier 2, > 60% Tier 4), eliminating invalid Tier 3 assignments that require adjacent interval overlap.
+
+## API Changes & Enhancements
+
+* **Programmatic Stability Access:** Added a machine-readable `$stability` list to `summary.validate_cutpoint_result()` exposing tier classifications, per-cut relative widths, interval separation status, and data spread for automated batch workflows.
+* **Data Retention:** `validate_cutpoint()` now retains input analysis data in `userdata`, ensuring structural parity with `find_cutpoint()`.
+
+## Documentation & Vignettes
+
+* **Stability Tier Clarification:** Clarified that the 4-tier matrix evaluates two independent diagnostic dimensions (interval separation and coordinate precision) rather than an ordinal rank.
+* **Standards & Vignettes:** Expanded `@srrstats {G1.1}` to detail methodological origins, re-rendered both clinical vignettes using corrected metrics, and updated `README.md` examples with the Mayo Clinic PBC cohort.
+* **Console Diagnostics:** Corrected typos and generalised console output across the systematic search engine to report actual candidate counts dynamically.
+
+## Testing & Quality Assurance
+
+* **Metric Regression & Reachability:** Added `test-stability-metric.R` to verify data inheritance, validate that single-cut models avoid Tier 3, and confirm that Tier 1 is empirically reachable on well-separated data.
+* **Workflow Integration Tests:** Added `test-workflow-integration.R` to ensure state and covariate preservation across the complete three-step pipeline (`find_cutpoint_number()` -> `find_cutpoint()` -> `validate_cutpoint()`).
+
+
+# OptSurvCutR v0.10.1 (2026-04-09)
+
+## Documentation & Standards Compliance
+
+* **Standards Compliance:** Expanded `@srrstats {G1.1}` documentation to detail methodological foundations (BIC model selection and multivariable Cox optimization) and delineate scope from univariate single-split tools.
+* **C++ Backend Alignment:** Updated technical documentation to reflect pure `Rcpp` implementation in `src/matrix_factory.cpp` without external linear algebra dependencies.
+* **Licensing & Governance:** Added raw GNU GPL-3 text (`LICENSE.md`), linked `CONTRIBUTING.md` in `README.md`, and calibrated README claims around software reproducibility.
+* **Vignettes & Examples:** Refreshed package metadata, vignettes, and validation examples to align directly with the current public API.
+
+## API Changes & Code Quality
+
+* **Plotting API Cleanup:** Removed the obsolete trajectory plot route from the S3 plotting engine.
+* **Namespace Isolation:** Refactored the test suite across `tests/testthat/` to eliminate all 40 unexported `OptSurvCutR:::` namespace calls.
+* **Branch Test Coverage:** Added targeted unit tests exercising parameter validations, edge conditions, and branching paths in `find_cutpoint_number()`, `find_cutpoint()`, and `validate_cutpoint()`.
+* **CRAN Verification:** Achieved full compliance under `R CMD check --as-cran` with 0 errors, 0 warnings, and 0 notes.
+
+## Dependencies & Bug Fixes
+
+* **Dependency Harmonization:** Classified `rgenoud` under `Suggests` with defensive runtime namespace checks and updated user documentation.
+* **Installation Fix:** Corrected duplicated syntax in GitHub installation instructions (`remotes::remotes::` to `remotes::`).
+
 # OptSurvCutR v0.10.0 (2026-06-17)
 
 ## Documentation Updates
@@ -132,7 +220,7 @@ This patch release addresses CRAN reviewer feedback and polishes the package's c
 
 ## COMMUNITY & OUTREACH
 
-**Presentations:** Presented at FOSDEM 2026 in the Bioinformatics & Computational Biology DevRoom in Brussels, Belgium. [View lightning talk details](https://fosdem.org/2026/schedule/event/9JQJ9M-bioinformatics_lighthning_talks/)
+**Presentations:** Presented at FOSDEM 2026 in the Bioinformatics & Computational Biology DevRoom in Brussels, Belgium. [View lightning talk details](https://archive.fosdem.org/2026/schedule/event/9JQJ9M-bioinformatics_lighthning_talks/)
 
 **Presentations:** Presented at R!SK 2026 (February 18–19, 2026). This 100% online conference focuses on evaluating, measuring, and mitigating risk across diverse industries including healthcare, finance, and insurance. The event featured deep content sessions and live Q&A interactions. [View presentation abstract](https://rconsortium.github.io/Risk_website/Abstracts.html#payton-yau)
 

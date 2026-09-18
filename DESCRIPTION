@@ -2,13 +2,18 @@ Package: OptSurvCutR
 Type: Package
 Title: Optimal Survival Cut-Point Discovery for Time-to-Event Analysis
         with 'OptSurvCutR'
-Version: 0.10.0
+Version: 0.11.1
 Authors@R: 
-    person(given = "Payton",
-           family = "Yau",
-           role = c("aut", "cre", "cph"),
-           email = "tungon@gmail.com",
-           comment = c(ORCID = "0000-0002-3283-0370"))
+    c(person(given = "Payton",
+             family = "Yau",
+             role = c("aut", "cre", "cph"),
+             email = "tungon@gmail.com",
+             comment = c(ORCID = "0000-0002-3283-0370")),
+      person(given = "Suhirthakumar",
+             family = "Puvanendran",
+             role = "aut",
+             email = "kumar.puvan@uwl.ac.uk",
+             comment = c(ORCID = "0000-0003-2346-0483")))
 Description: Provides a robust workflow for optimal cut-point analysis in
     time-to-event ('survival') data. Functions determine the optimal number
     of cut-points via find_cutpoint_number(), find their precise locations
@@ -32,11 +37,13 @@ Config/testthat/edition: 3
 Depends: R (>= 3.5)
 Language: en-GB
 Config/Needs/website: logo.png
-Config/roxygen2/version: 8.0.0
+Config/roxygen2/version: 8.1.0
 NeedsCompilation: yes
-Packaged: 2026-06-24 16:05:32 UTC; Payton
+Packaged: 2026-09-18 19:53:17 UTC; Payton
 Author: Payton Yau [aut, cre, cph] (ORCID:
-    <https://orcid.org/0000-0002-3283-0370>)
+    <https://orcid.org/0000-0002-3283-0370>),
+  Suhirthakumar Puvanendran [aut] (ORCID:
+    <https://orcid.org/0000-0003-2346-0483>)
 Maintainer: Payton Yau <tungon@gmail.com>
 Repository: CRAN
-Date/Publication: 2026-06-30 12:20:26 UTC
+Date/Publication: 2026-09-18 21:12:05 UTC

@@ -6,7 +6,7 @@
 #' Internal helper: Systematic Grid Search over Regulared Space
 #'
 #' @description
-#' Implements an exhaustive grid search over a regulared percentile space
+#' Implements an exhaustive grid search over a regularised percentile space
 #' to evaluate possible thresholds for 1 or 2 cut-points, respecting the minimum
 #' group size constraints.
 #'
@@ -30,7 +30,7 @@
 .systematic_search <- function(userdata, num_cuts, criterion,
                                covariates, nmin, predictor_name,
                                quiet, candidate_cuts = NULL, ...) {
-  if (!quiet) cli::cli_alert_info("Running regulared systematic search for {num_cuts} cut-point(s)...")
+  if (!quiet) cli::cli_alert_info("Running regularised systematic search for {num_cuts} cut-point(s)...")
   userdata <- userdata[order(userdata$factor), ]
 
   cov_part <- if (!is.null(covariates)) paste(" +", paste(covariates, collapse = " + ")) else ""
@@ -66,7 +66,7 @@
   best_cut_val <- rep(NA_real_, num_cuts)
   all_stats_df <- NULL
 
-  # Establish the core regulared grid structure
+  # Establish the core regularised grid structure
   if (!is.null(candidate_cuts)) {
     search_grid <- candidate_cuts
   } else {
@@ -95,7 +95,7 @@
     best_stat <- stats_per_cut[best_idx]
     all_stats_df <- data.frame(cut1 = search_grid, stat = stats_per_cut)
   } else { # num_cuts == 2
-    if (!quiet) cli::cli_alert_info("Searching for 2 cuts over regulared coordinate space...")
+    if (!quiet) cli::cli_alert_info("Searching over {length(search_grid)} candidate positions for {num_cuts} cut(s)...")
     foreach::registerDoSEQ()
 
     if (length(search_grid) < 2) {
@@ -137,7 +137,7 @@
     all_stats_df <- results_list
   }
 
-  if (!quiet) cli::cli_alert_success("Systematic grid optimation complete.")
+  if (!quiet) cli::cli_alert_success("Systematic grid optimisation complete.")
   return(list(
     optimal_cuts = best_cut_val,
     optimal_stat = best_stat,
@@ -216,7 +216,15 @@
       if (is.null(fit_null) || is.null(fit$loglik)) {
         return(NA)
       }
-      lrt_stat <- 2 * (fit$loglik[2] - fit_null$loglik[2])
+      # fit_null$loglik has length 1 when the null model has no covariates
+      # (coxph(Surv(time, event) ~ 1) returns a single log-likelihood, not a
+      # c(null, fitted) pair). Using fit_null$loglik[2] in that case silently
+      # returns NA for every candidate cut, which find_cutpoint_number()
+      # then reports as "no valid cut-points found" regardless of whether a
+      # real split exists in the data. Take the last element, which is the
+      # fitted null log-likelihood in both the length-1 and length-2 cases.
+      null_ll <- fit_null$loglik[length(fit_null$loglik)]
+      lrt_stat <- 2 * (fit$loglik[2] - null_ll)
       return(stats::pchisq(lrt_stat, df = num_cuts, lower.tail = FALSE))
     }
   }
@@ -225,7 +233,7 @@
 #' Internal helper: Systematic Model Selection and Delta IC Range Mining
 #'
 #' @description
-#' Evaluates models from 1 to `max_cuts` using the regulared systematic
+#' Evaluates models from 1 to `max_cuts` using the regularised systematic
 #' sweeper, computing Information Criteria (AIC/BIC) and profiling the permissible range.
 #'
 #' @param userdata Cleaned survival data frame.

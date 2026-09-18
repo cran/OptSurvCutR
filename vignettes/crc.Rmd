@@ -1,0 +1,401 @@
+---
+title: "Thresholds in a Discrete Predictor"
+subtitle: "Lymph node burden in stage III colon cancer"
+author:
+  - "Payton Yau"
+  - "Suhirthakumar Puvanendran"
+date: "`r Sys.Date()`"
+output:
+  rmarkdown::html_vignette:
+    toc: true
+    fig_caption: yes
+vignette: >
+  %\VignetteIndexEntry{Thresholds in a Discrete Predictor}
+  %\VignetteEncoding{UTF-8}
+  %\VignetteEngine{knitr::rmarkdown}
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE, comment = "+",
+  fig.width = 7, fig.height = 4, fig.align = "center",
+  warning = FALSE, message = TRUE
+)
+options(cli.num_colors = 1)
+# Suppress cli progress bars (validate_cutpoint()'s "Bootstrapping" bar):
+# same rationale as bilirubin.Rmd - see that vignette's setup chunk.
+options(cli.progress_show_after = Inf)
+```
+
+# Introduction
+
+The companion vignette applies the workflow to a continuous marker and
+arrives at a precise threshold. This one uses a **count**, and does not.
+
+Counts take few distinct values, cluster at the low end, and admit
+boundaries only at whole numbers. A threshold cannot shift slightly: it
+jumps, and a single step can reassign a large block of patients. This
+vignette shows how that behaves in practice and how to report the result.
+
+## The data
+
+The `colon` dataset comes from two North Central Cancer Treatment Group
+trials of adjuvant levamisole and fluorouracil after resection of stage
+III colon cancer (Laurie et al., 1989; Moertel et al., 1990). Stage III
+means the tumour has spread to regional lymph nodes but not beyond, and
+the number of involved nodes is among the strongest predictors of
+recurrence.
+
+Staging already uses this count: the AJCC system divides N1 from N2 at
+four positive nodes. Here we ask what boundary the trial data support,
+adjusting for age, sex and tumour differentiation grade, using
+recurrence-free survival capped at five years.
+
+------------------------------------------------------------------------
+
+# 1. Setup
+
+```{r load-libraries}
+library(dplyr)
+library(survival)
+library(ggplot2)
+library(knitr)
+library(OptSurvCutR)
+
+options(cli.num_colors = 1)
+```
+
+```{r configuration}
+covariates_to_adjust_for <- c("age", "sex", "differ")
+
+# One minimum group size, used at every step
+NMIN <- 0.15
+```
+
+A single `nmin` value is used at every step. If model selection and
+threshold location run under different constraints they search different
+spaces, and their results are not directly comparable.
+
+------------------------------------------------------------------------
+
+# 2. Data preparation
+
+The dataset holds **two rows per patient**, one for recurrence and one
+for death (`etype`). Modelling both without filtering would treat each
+patient as two independent observations.
+
+```{r load-data}
+# library(survival), loaded above, already exposes `colon` as a lazy-loaded
+# object. An explicit data("colon", package = "survival") call here would
+# emit a spurious "data set 'colon' not found" warning in a clean session -
+# the dataset lives inside survival's multi-object cancer.rda, and data()'s
+# own name-based lookup does not resolve it the same way library() does.
+# Confirmed harmless and unnecessary; see the equivalent fix in Figure_3.R.
+
+analysis_data <- colon %>%
+  filter(etype == 1) %>%                      # recurrence records only
+  select(patient_id = id, time_days = time, status,
+         nodes, all_of(covariates_to_adjust_for)) %>%
+  mutate(
+    time_months  = time_days / 30.4375,
+    status_final = ifelse(time_months > 60, 0, status),   # 5-year censoring
+    time_final   = pmin(time_months, 60)
+  ) %>%
+  select(patient_id, time = time_final, status = status_final,
+         nodes, all_of(covariates_to_adjust_for)) %>%
+  filter(complete.cases(time, status, nodes,
+                        across(all_of(covariates_to_adjust_for))))
+
+nrow(analysis_data)
+```
+
+This leaves **888 patients** — the number to report, rather than the 929
+recurrence records or the 1,858 rows in the raw file.
+
+It is worth inspecting the predictor before searching:
+
+```{r predictor-table}
+table(analysis_data$nodes)
+```
+
+Most patients have one to three positive nodes, and the tail is long and
+sparse. Everything that follows is shaped by this distribution.
+
+------------------------------------------------------------------------
+
+# 3. Finding the cut-points
+
+## How many?
+
+BIC is used rather than AIC: a staging rule is confirmatory work, and BIC
+penalises additional groups more heavily.
+
+```{r find-number}
+number_result <- find_cutpoint_number(
+  data = analysis_data, predictor = "nodes",
+  outcome_time = "time", outcome_event = "status",
+  covariates = covariates_to_adjust_for,
+  method = "genetic", criterion = "BIC",
+  max_cuts = 4, nmin = NMIN,
+  max.generations = NULL, pop.size = NULL,
+  boundary.enforcement = 2, seed = 123
+)
+
+summary(number_result)
+```
+
+```{r plot-number}
+plot(number_result)
+```
+
+BIC is minimised at **two cut-points**, holding 92.8% of the BIC weight;
+the single-cut model is the runner-up at ΔBIC = 5.11 (7.2%).
+
+Larger models return no valid configuration under `nmin = 0.15`, which
+requires 133 patients per group. In a separate run with `nmin` lowered to
+0.125 (a floor of 111 patients) the three-cut model completed and was
+clearly inferior (BIC = 5510.22, ΔBIC = 9.04). The constraint therefore
+excluded a model rather than protecting against a better one, though this
+can only be established by testing: a message reporting that subgroups
+violated the constraint is not evidence that a configuration is
+infeasible.
+
+The Schoenfeld test in this summary already flags a departure from
+proportional hazards (*p* = 0.000682), which we return to in section 5.
+
+## Where?
+
+`nodes` takes few distinct values, so an exhaustive search is fast and
+exact.
+
+```{r find-cutpoint}
+cutpoint_result <- find_cutpoint(
+  data = analysis_data, predictor = "nodes",
+  outcome_time = "time", outcome_event = "status",
+  covariates = covariates_to_adjust_for,
+  num_cuts = number_result$optimal_num_cuts,
+  method = "systematic", criterion = "logrank",
+  nmin = NMIN,
+  n_perm = 100,          # low for build speed; use >= 1000 when reporting
+  seed = 123, n_cores = 1
+)
+
+summary(cutpoint_result)
+```
+
+The thresholds are **2 and 4 positive nodes**:
+
+| Group | Nodes | N | Events | Median RFS | 5-year RFS |
+|:---|:---|---:|---:|:---|:---|
+| G1 (Low) | 1–2 | 457 | 168 | Not reached | 62.6% (58.3–67.2) |
+| G2 (Intermediate) | 3–4 | 202 | 102 | 51 months | 48.7% (42.2–56.2) |
+| G3 (High) | ≥ 5 | 229 | 159 | 15 months | 29.8% (24.3–36.4) |
+
+Adjusted hazard ratios are 1.57 and 2.75 relative to G1. Among the
+covariates only differentiation grade is independently associated with
+recurrence (HR = 1.24, *p* = 0.028). Concordance is 0.63 — real but
+moderate discrimination.
+
+Note that G1's five-year survival is 62.6%, not 58.3%; the lower figure
+is the confidence bound. The permutation *p* of 0.0099 is exactly
+1/(100+1), the floor for `n_perm = 100`.
+
+```{r plot-surface, fig.width=7, fig.height=4.75}
+plot(cutpoint_result, type = "surface")
+```
+
+Because the search was exhaustive, every evaluated pair is retained. A
+broad bright region rather than a sharp peak indicates that many
+threshold pairs score almost as well as the winner — an early sign that
+the boundaries will not be stable.
+
+```{r plot-distribution}
+plot(cutpoint_result, type = "distribution")
+```
+
+The thresholds are overlaid on the distribution of node counts. The
+contrast with a continuous marker is visible here: values stack at each
+integer, so the boundaries fall between discrete columns rather than
+within a smooth density.
+
+------------------------------------------------------------------------
+
+# 4. Stability
+
+```{r validate}
+validation_result <- validate_cutpoint(
+  cutpoint_result = cutpoint_result,
+  num_replicates = 30,      # reduced for build speed; use >= 500 when reporting
+  n_cores = 1, seed = 123   # single core: vignette builds cannot use parallel workers
+)
+
+summary(validation_result)
+```
+
+| Tier | Overlap | Width | Meaning |
+|:---|:---|:---|:---|
+| 1 — OPTIMAL | None | < 30% | Precise boundaries, distinct groups |
+| 2 — DISTINCT | None | Any | Groups distinct, boundaries move |
+| 3 — CAUTION | Present | 30–60% | Adjacent groups not cleanly separated |
+| 4 — UNSTABLE | Present | > 60% | Boundaries not reproducible |
+
+These are two independent diagnostics rather than an ordinal scale, and
+the percentages are practical conventions.
+
+```{r plot-validation}
+plot(validation_result)
+```
+
+```{r plot-validation-2d, fig.width=7, fig.height=4}
+plot_validation(validation_result, focus_cuts = c(1, 2),
+                main = "Cuts 1 and 2 across resamples")
+```
+
+The resampled boundaries sit on a handful of discrete positions rather
+than forming a smooth cloud. This is characteristic of a count predictor:
+the boundary can only take whole-number values, so it jumps between them.
+
+Thirty replicates is sufficient to illustrate the output. With few
+replicates the intervals are narrower than they should be, so use at
+least 500 replicates for any reported analysis.
+
+## Results at 500 replicates
+
+| Model | Threshold(s) | Widest interval | Tier |
+|:---|:---|---:|:---|
+| Two cut-points (BIC choice) | 2, 4 | 42.9% | 3 — CAUTION |
+| One cut-point | 4 | 57.1% | 2 — DISTINCT |
+
+For the two-cut model the intervals are 1–3 and 3–6. They meet at 3, so
+adjacent groups are not cleanly separated. The lower boundary is
+reasonably precise at 28.6%; the upper one is not. 
+
+The threshold is **4 positive nodes** with a bootstrap interval of 2–6.
+The median across resamples is 4 and the interquartile range 3–4, so the
+boundary is usually recovered, although the tail extends to 2 and 6. With
+one boundary there is no separation to assess, so the model is graded on
+width alone.
+
+The single-cut model was already the BIC runner-up, and was therefore a
+candidate on model-selection grounds before any stability result. This is
+worth stating when reporting a simplification made after inspecting the
+bootstrap.
+
+------------------------------------------------------------------------
+
+# 5. Reporting and diagnostics
+
+## Group composition
+
+```{r group-composition}
+grouped <- plot(cutpoint_result, return_data = TRUE)
+
+grouped %>%
+  group_by(group) %>%
+  summarise(
+    Nodes    = paste0(min(factor), " - ", max(factor)),
+    N        = n(),
+    Events   = sum(event),
+    Mean_Age = round(mean(age), 1),
+    Grade    = round(mean(differ), 2)
+  ) %>%
+  kable(caption = "Composition of the three nodal burden groups")
+```
+
+Checking this table before reporting is worthwhile. Mean age is similar
+across groups, so the survival gradient is not age acting through node
+count. Mean differentiation grade rises with nodal burden, which is why
+it is included as an adjustment variable.
+
+## Hazard ratios
+
+```{r plot-forest, fig.width=7, fig.height=3.5}
+plot(cutpoint_result, type = "forest",
+     reference_group = "G1",
+     main = "Adjusted hazard ratios for nodal burden groups")
+```
+
+The estimates are adjusted for age, sex and differentiation grade, so
+nodal burden is not standing in for those. Two qualifications apply: they
+were estimated on the same data that selected the thresholds and are
+therefore optimistic, and because proportional hazards does not hold
+(below) each is an average effect over the 60-month window.
+
+## Proportional hazards
+
+```{r plot-residuals}
+plot(cutpoint_result, type = "diagnostic")
+```
+
+The Schoenfeld test returns global *p* = 0.000682, so proportional
+hazards does not hold. The effect of nodal burden is strongest early and
+attenuates, consistent with most stage III recurrences occurring within
+two years. The grouping remains valid; the hazard ratios should be
+described as averages over the 60-month window rather than constant
+multipliers.
+
+## Landmark analysis
+
+```{r plot-landmark, fig.width=7, fig.height=4.5}
+plot(cutpoint_result, type = "landmark", landmark = 12,
+     legend.title = "Nodal burden group")
+```
+
+A landmark analysis restarts the clock at 12 months among patients still
+event-free. Separation persisting there indicates the groups carry
+information beyond early events. This addresses immortal time bias rather
+than eliminating it.
+
+## Survival curves
+
+```{r plot-km}
+plot(cutpoint_result, type = "outcome",
+     title = "Five-year recurrence-free survival by nodal burden",
+     xlab = "Time (months)", ylab = "Recurrence-free survival",
+     legend.title = "Nodal burden group",
+     legend.labs = c("Low (G1)", "Intermediate (G2)", "High (G3)"))
+```
+
+------------------------------------------------------------------------
+
+# 6. Conclusion
+
+Node count separates these 888 patients into three groups with clearly
+different recurrence-free survival, at 2 and 4 positive nodes. The result
+is highly significant.
+
+The boundaries are not precise. Across 500 resamples the first moves
+between 1 and 3 and the second between 3 and 6, and the two overlap.
+Reducing to one cut-point removes the overlap but leaves an interval of
+2–6 around a threshold of 4.
+
+The conclusion is not that node count fails to predict recurrence, which
+it plainly does, but that a discrete predictor with few distinct values
+supports a **range** rather than a single value. Recurrence risk rises
+somewhere around three to five positive nodes. A rule using four is
+defensible; a claim that four is specifically optimal is not.
+
+The data-driven optimum coincides with the AJCC N1/N2 boundary at four
+nodes. Given the width of the interval this is best described as
+consistent with the staging convention rather than as independent support
+for it.
+
+For discrete predictors: tabulate the values first, prefer
+`method = "systematic"`, use one `nmin` throughout, expect wide
+intervals, and report the boundary as a range when the width is large.
+
+## References
+
+Laurie JA, Moertel CG, Fleming TR, et al. (1989). Surgical adjuvant
+therapy of large-bowel carcinoma. *J Clin Oncol* 7:1447–1456.
+
+Moertel CG, Fleming TR, Macdonald JS, et al. (1990). Levamisole and
+fluorouracil for adjuvant therapy of resected colon carcinoma.
+*N Engl J Med* 322:352–358.
+
+```{r sessionInfo}
+sessionInfo()
+```

@@ -49,7 +49,7 @@ theme_optsurv <- function(base_size = 14) {
 #'
 #' @param x A \code{find_cutpoint} result object.
 #' @param type Plot framework type: \code{"outcome"}, \code{"distribution"}, \code{"forest"},
-#'         \code{"surface"}, \code{"trajectory"}, \code{"diagnostic"}, or \code{"landmark"}.
+#'         \code{"surface"}, \code{"diagnostic"}, or \code{"landmark"}.
 #' @param return_data Logical. If \code{TRUE}, exits the router early and returns the
 #'        assigned underlying data frame template.
 #' @param landmark Numeric. The operational milestone timestamp used if \code{type = "landmark"}.
@@ -83,8 +83,7 @@ theme_optsurv <- function(base_size = 14) {
 plot.find_cutpoint <- function(
   x, type = c(
     "outcome", "distribution", "forest",
-    "surface", "trajectory",
-    "diagnostic", "landmark"
+    "surface", "diagnostic", "landmark"
   ),
   return_data = FALSE, landmark = NULL, ...
 ) {
@@ -114,7 +113,6 @@ plot.find_cutpoint <- function(
     "distribution" = .plot_density_cuts(x, df, ...),
     "forest"       = .plot_hr_forest(x, df, ...),
     "surface"      = plot_optimisation_curve(x, ...),
-    "trajectory"   = .plot_genetic_trajectory(x, ...),
     "diagnostic"   = plot_cutpoint_residuals(x, ...),
     "landmark"     = plot_landmark_stratification(x, landmark = landmark, ...)
   )
@@ -126,7 +124,7 @@ plot.find_cutpoint <- function(
 #' Plots the metric landscape evaluated across coordinates. Maps a 1D optimisation line
 #' for 1-cut systematic setups, or a 2D topographic grid profile for 2-cut layouts.
 #'
-#' @param cutpoint_result A \code{find_cutpoint} object.
+#' @param cutpoint_result A \code{find_cutpoint} object generated with \code{method = "systematic"}.
 #' @param ... Unused dots.
 #' @return A valid \code{ggplot} object detailing evaluation statistics vs coordinates.
 #'
@@ -134,58 +132,78 @@ plot.find_cutpoint <- function(
 #' .
 #' @srrstats {RE6.2} Visualises the continuous fitted values and optimisation landscape of the model.
 #'
-#' @importFrom ggplot2 ggplot aes geom_line geom_vline geom_hline labs geom_tile scale_fill_viridis_c scale_color_manual element_blank
-#' @importFrom rlang .data
+#' @examples
+#' library(survival)
+#' data(pbc, package = "survival")
+#' pbc_sub <- na.omit(pbc[1:60, c("time", "status", "bili")])
+#' pbc_sub$event <- as.integer(pbc_sub$status %in% c(1, 2))
+#'
+#' # Execute a minimal 1-cut systematic search to generate the grid landscape
+#' res <- find_cutpoint(
+#'   data          = pbc_sub,
+#'   predictor     = "bili",
+#'   outcome_time  = "time",
+#'   outcome_event = "event",
+#'   num_cuts      = 1,
+#'   method        = "systematic"
+#' )
+#'
+#' # Plot the 1D metric optimisation curve
+#' plot_optimisation_curve(res)
+#'
+#' @importFrom ggplot2 ggplot aes geom_line geom_vline geom_hline labs geom_tile
+#'   scale_fill_viridis_c scale_color_manual element_blank geom_text
+#'   scale_x_continuous scale_y_continuous theme
+#' @importFrom rlang .data sym
 #' @importFrom cli cli_abort
 #' @export
-#' @examples
-#' if (requireNamespace("survival", quietly = TRUE)) {
-#'   library(survival)
-#'   # Build clean simulation objects using a 2-cut systematic search
-#'   # to populate the 2D grid matrix log array
-#'   set.seed(123)
-#'   mock_df <- data.frame(
-#'     time   = c(runif(10, 50, 100), runif(10, 20, 60), runif(10, 5, 25)),
-#'     event  = rep(1, 30),
-#'     factor = c(rnorm(10, 2, 0.2), rnorm(10, 7, 0.2), rnorm(10, 15, 0.2))
-#'   )
-#'   res <- find_cutpoint(
-#'     mock_df, "factor", "time", "event",
-#'     num_cuts = 2, method = "systematic", quiet = TRUE, nmin = 3
-#'   )
-#'   p <- plot_optimisation_curve(res)
-#' }
 plot_optimisation_curve <- function(cutpoint_result, ...) {
   if (!inherits(cutpoint_result, "find_cutpoint")) {
     cli::cli_abort("Input must be an object from the {.fn find_cutpoint} function.")
   }
 
   params <- cutpoint_result$parameters
+
   if (params$method != "systematic") {
-    cli::cli_abort("Surface mapping (`type = 'surface'`) is only available for `method = 'systematic'`.")
+    cli::cli_abort(c(
+      "Surface mapping (`type = 'surface'`) is only available for models built using `method = 'systematic'`.",
+      "i" = "The genetic algorithm uses stochastic jumps and does not generate an exhaustive evaluation grid array.",
+      "*" = "To view an optimization surface, re-run {.fn find_cutpoint} with `method = 'systematic'`."
+    ))
   }
-  if (is.null(cutpoint_result$all_stats) || !is.data.frame(cutpoint_result$all_stats)) {
-    cli::cli_abort("The results object must contain a valid grid log array in `all_stats`.")
+
+  if (is.null(cutpoint_result$all_stats) || !is.data.frame(cutpoint_result$all_stats) || nrow(cutpoint_result$all_stats) == 0) {
+    cli::cli_abort("The results object must contain a valid, non-empty grid log array in `all_stats`.")
   }
 
   plot_data <- cutpoint_result$all_stats
   criterion <- params$criterion
 
   y_label <- switch(criterion,
-    "logrank" = "Log-Rank Statistic",
-    "hazard_ratio" = "Hazard Ratio",
-    "p_value" = "P-value",
-    criterion
+                    "logrank"      = "Log-Rank Statistic",
+                    "hazard_ratio" = "Hazard Ratio",
+                    "p_value"      = "P-value",
+                    if (!is.null(criterion)) criterion else "Statistic"
   )
 
+  pred_label <- if (!is.null(params$predictor)) paste0(" (", params$predictor, ")") else ""
+
   if (params$num_cuts == 1) {
+    # Resolve 1-cut coordinate column defensively ('cut1' or 'c1')
+    coord_col <- intersect(c("cut1", "c1"), names(plot_data))[1]
+    if (is.na(coord_col)) {
+      cli::cli_abort("Could not find coordinate column (`cut1` or `c1`) in `all_stats`.")
+    }
+
     optimal_cut <- cutpoint_result$optimal_cuts[1]
-    p <- ggplot2::ggplot(plot_data, ggplot2::aes(x = .data$cut1, y = .data$stat)) +
+
+    p <- ggplot2::ggplot(plot_data, ggplot2::aes(x = .data[[coord_col]], y = .data$stat)) +
       ggplot2::geom_line(color = "#0072B2", linewidth = 1.2) +
       ggplot2::labs(
-        title = paste(y_label, "vs. Cut-point Coordinate"),
+        title    = paste(y_label, "vs. Cut-point Coordinate"),
         subtitle = paste("Optimal cut-point discovered at:", round(optimal_cut, 3)),
-        x = "Cut-point Threshold Location", y = y_label
+        x        = paste0("Cut-point Threshold Location", pred_label),
+        y        = y_label
       ) +
       theme_optsurv()
 
@@ -195,22 +213,58 @@ plot_optimisation_curve <- function(cutpoint_result, ...) {
         color = "#D55E00", linewidth = 1.2
       )
     }
-    if (criterion == "hazard_ratio") {
+    if (identical(criterion, "hazard_ratio")) {
       p <- p + ggplot2::geom_hline(yintercept = 1, linetype = "dotted")
     }
+
     return(p)
+
   } else if (params$num_cuts == 2) {
+    if (!all(c("c1", "c2", "stat") %in% names(plot_data))) {
+      cli::cli_abort("2-cut surface data requires columns `c1`, `c2`, and `stat` in `all_stats`.")
+    }
+
     p <- ggplot2::ggplot(plot_data, ggplot2::aes(x = .data$c1, y = .data$c2, fill = .data$stat)) +
-      ggplot2::geom_tile() +
+      ggplot2::geom_tile(color = "white", linewidth = 1.0) +
       ggplot2::scale_fill_viridis_c(name = y_label, option = "viridis") +
       ggplot2::labs(
-        title = paste("Systematic Objective Surface:", y_label),
+        title    = paste("Systematic Objective Surface:", y_label),
         subtitle = paste("Optimal Matrix Peaks:", paste(round(cutpoint_result$optimal_cuts, 3), collapse = ", ")),
-        x = "Cut-point 1 Coordinate", y = "Cut-point 2 Coordinate"
+        x        = paste0("Cut-point 1 Coordinate", pred_label),
+        y        = paste0("Cut-point 2 Coordinate", pred_label)
       ) +
       theme_optsurv() +
-      ggplot2::theme(panel.grid.major = ggplot2::element_blank())
+      ggplot2::theme(
+        panel.grid.major = ggplot2::element_blank(),
+        panel.grid.minor = ggplot2::element_blank()
+      )
+
+    # Overlay numeric values on coarse grids (<= 15 cells)
+    if (nrow(plot_data) <= 15) {
+      max_stat <- max(plot_data$stat, na.rm = TRUE)
+      p <- p + ggplot2::geom_text(
+        ggplot2::aes(
+          label = round(.data$stat, 2),
+          color = .data$stat > (max_stat * 0.7)
+        ),
+        fontface = "bold", size = 4.5, show.legend = FALSE
+      ) +
+        ggplot2::scale_color_manual(values = c("TRUE" = "black", "FALSE" = "white"))
+    }
+
+    # Dynamically enforce integer ticks ONLY if coordinates are strictly integers
+    is_discrete_c1 <- all(abs(plot_data$c1 - round(plot_data$c1)) < .Machine$double.eps^0.5, na.rm = TRUE)
+    is_discrete_c2 <- all(abs(plot_data$c2 - round(plot_data$c2)) < .Machine$double.eps^0.5, na.rm = TRUE)
+
+    if (is_discrete_c1) {
+      p <- p + ggplot2::scale_x_continuous(breaks = function(x) unique(floor(pretty(x))))
+    }
+    if (is_discrete_c2) {
+      p <- p + ggplot2::scale_y_continuous(breaks = function(y) unique(floor(pretty(y))))
+    }
+
     return(p)
+
   } else {
     cli::cli_abort("Surface plotting is restricted to 1 or 2 cuts under systematic grid evaluations.")
   }
@@ -277,21 +331,55 @@ plot_cutpoint_residuals <- function(x, ...) {
     cli::cli_abort("Proportional hazards evaluation failed due to a singular model matrix.")
   }
 
+  # cox.zph()$y POOLS multi-degree-of-freedom terms into a single column
+  # named after the term (here "group"), not one column per coefficient,
+  # whenever the stratifying factor has more than 2 levels (num_cuts > 1).
+  # Confirmed against survival 3.8.11: cox.zph(coxph(Surv(time,event)~group))
+  # with a 3-level group returns dim(zph$y) == c(n, 1), colnames == "group",
+  # even under transform = "identity". resid(fit, type = "schoenfeld")
+  # returns the per-coefficient residuals cox.zph pools away (dim
+  # c(n, num_cuts), colnames c("group2", "group3", ...)), but does not
+  # carry cox.zph's transformed time axis. The fix below uses cox.zph()
+  # only for the transformed time axis (zph$x) and the global p-value
+  # (zph$table), and takes the actual per-stratum residual VALUES from
+  # resid(), aligning the two by row position (both are ordered by event
+  # time and have the same length). For a single cut-point (one
+  # coefficient), cox.zph()$y already returns one named column and this
+  # produces the same result as before.
   time_vec <- zph$x
-  residual_matrix <- zph$y
-  col_names <- colnames(residual_matrix)
+  raw_resid <- stats::residuals(fit, type = "schoenfeld")
 
+  # residuals() drops to a plain (unnamed) numeric vector, not a matrix,
+  # when there is exactly one coefficient (num_cuts == 1); restore a
+  # column name in that case so the logic below is uniform.
+  if (is.null(dim(raw_resid))) {
+    raw_resid <- matrix(raw_resid, ncol = 1, dimnames = list(NULL, "group2"))
+  }
+
+  col_names <- colnames(raw_resid)
   target_cols <- grep("^group", col_names, value = TRUE)
   if (length(target_cols) == 0) {
     cli::cli_inform("No stratified group metrics available for diagnostic modeling.")
     return(invisible(NULL))
   }
 
+  if (nrow(raw_resid) != length(time_vec)) {
+    cli::cli_abort(paste(
+      "Internal error: residual matrix and transformed-time vector have",
+      "mismatched lengths; cannot align Schoenfeld diagnostics."
+    ))
+  }
+
   long_list <- lapply(target_cols, function(col) {
     data.frame(
       Time = time_vec,
-      Residual = residual_matrix[, col],
-      Cohort = gsub("group", "Cohort G", col, fixed = TRUE)
+      Residual = raw_resid[, col],
+      # e.g. "group2" -> "Cohort G2": gsub only strips the literal prefix
+      # "group", leaving the coefficient's own level number intact, so
+      # each stratum keeps a distinguishing label instead of collapsing
+      # to the generic "Cohort G" that resulted from relabelling
+      # cox.zph()'s single pooled "group" column.
+      Cohort = gsub("^group", "Cohort G", col)
     )
   })
   plot_df <- do.call(rbind, long_list)
@@ -525,12 +613,28 @@ plot_validation <- function(validation_result,
 #' @importFrom grDevices colorRampPalette
 #' @noRd
 .plot_km_curve <- function(x, df, title = "Kaplan-Meier Survival Estimation",
-                           xlab = "Follow-up Time", ylab = "Overall Survival Probability", ...) {
+                           xlab = "Follow-up Time",
+                           # "Overall Survival Probability" was the default here,
+                           # which is wrong for any non-OS endpoint (recurrence-free,
+                           # transplant-free, progression-free survival, etc.) unless
+                           # the caller explicitly overrides ylab. "Survival
+                           # Probability" is correct regardless of endpoint; callers
+                           # wanting endpoint-specific wording already pass ylab
+                           # explicitly (see Figure_2.R / Figure_3.R in the case
+                           # study scripts).
+                           ylab = "Survival Probability", ...) {
   if (!requireNamespace("survminer", quietly = TRUE)) {
     cli::cli_abort("Package {.pkg survminer} is required to render outcome tracking charts.")
   }
 
   target_formula <- stats::as.formula("survival::Surv(time, event) ~ group")
+
+  # ????????? THE v0.11.0 SCOPING IMMUNIZATION PATCH ??????? ????????????????????????????????????????????????????????????
+  # Bind the formula environment strictly to the current execution frame.
+  # This forces downstream evaluation engines (like survminer::ggsurvplot)
+  # to resolve the symbol 'df' locally, fixing the landmark-identical plot bug.
+  environment(target_formula) <- environment()
+
   fit_km <- survival::survfit(target_formula, data = df)
   fit_km$call$formula <- target_formula
 
@@ -545,9 +649,9 @@ plot_validation <- function(validation_result,
   }
 
   p <- survminer::ggsurvplot(fit_km,
-    data = df, title = title, xlab = xlab, ylab = ylab,
-    palette = dynamic_palette,
-    pval = TRUE, ggtheme = theme_optsurv(), ...
+                             data = df, title = title, xlab = xlab, ylab = ylab,
+                             palette = dynamic_palette,
+                             pval = TRUE, ggtheme = theme_optsurv(), ...
   )
 
   if (!is.null(p$plot)) p$plot <- p$plot + theme_optsurv()
@@ -803,22 +907,4 @@ plot_validation <- function(validation_result,
     ggplot2::theme(legend.position = "bottom")
 
   return(combined_layout)
-}
-
-#' Internal helper: Placeholder for Genetic Trajectory Plots
-#'
-#' @description
-#' Intercepts calls for evolutionary trajectory tracking plots and informs the user
-#' regarding engine-specific plotting availability constraints.
-#'
-#' @inheritParams find_cutpoint
-#' @param ... Unused arguments passed down safely.
-#'
-#' @return `invisible(NULL)` cleanly.
-#'
-#' @importFrom cli cli_inform
-#' @noRd
-.plot_genetic_trajectory <- function(x, ...) {
-  cli::cli_inform("Trajectory tracking plots (`type = 'trajectory'`) are reserved for downstream optimisation tracking structures in evolutionary models.")
-  return(invisible(NULL))
 }
